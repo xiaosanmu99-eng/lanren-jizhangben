@@ -48,18 +48,51 @@ const STATEMENTS = [
     amount_cents INTEGER NOT NULL CHECK (amount_cents <> 0 AND amount_cents BETWEEN -99999999 AND 99999999),
     spent_on TEXT NOT NULL CHECK (spent_on ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'),
     merchant TEXT NOT NULL CHECK (char_length(merchant) BETWEEN 1 AND 40),
-    category TEXT NOT NULL CHECK (category IN ('食堂', '其他餐饮', '交通', '购物', '其他')),
+    category TEXT NOT NULL DEFAULT '',
     note TEXT NOT NULL DEFAULT '' CHECK (char_length(note) <= 80),
     external_id TEXT UNIQUE,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS transactions_spent_on_idx ON transactions (spent_on DESC)`,
+  `ALTER TABLE transactions ALTER COLUMN category SET DEFAULT ''`,
+  `DO $$
+DECLARE
+  constraint_name text;
+BEGIN
+  FOR constraint_name IN
+    SELECT con.conname
+    FROM pg_constraint con
+    JOIN pg_class rel ON rel.oid = con.conrelid
+    WHERE rel.relname = 'transactions'
+      AND con.contype = 'c'
+      AND pg_get_constraintdef(con.oid) ILIKE '%category%'
+      AND pg_get_constraintdef(con.oid) NOT ILIKE '%char_length(category)%'
+  LOOP
+    EXECUTE format('ALTER TABLE transactions DROP CONSTRAINT %I', constraint_name);
+  END LOOP;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'transactions_category_length_check'
+  ) THEN
+    BEGIN
+      ALTER TABLE transactions
+        ADD CONSTRAINT transactions_category_length_check
+        CHECK (char_length(category) <= 20);
+    EXCEPTION
+      WHEN duplicate_object THEN NULL;
+    END;
+  END IF;
+END $$`,
 ];
+
+export async function applySchema(): Promise<void> {
+  for (const statement of STATEMENTS) await query(statement);
+}
 
 export async function ensureReady(): Promise<void> {
   if (migrated) return;
-  for (const statement of STATEMENTS) await query(statement);
+  await applySchema();
   migrated = true;
 }
 

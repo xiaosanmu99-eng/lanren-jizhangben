@@ -48,8 +48,38 @@ test("weekly net subtracts refunds and does not let refunds inflate the share", 
   assert.equal(summary.netCents, 1300);
   assert.equal(summary.days[0].netCents, 800);
   assert.equal(summary.days[1].netCents, 500);
-  assert.equal(summary.categories[0].sharePercent, 66.7);
-  assert.equal(summary.categories[2].sharePercent, 33.3);
+  const byTag = Object.fromEntries(summary.categories.map((category) => [category.category, category.sharePercent]));
+  assert.deepEqual(
+    summary.categories.map((category) => category.category),
+    ["食堂", "交通"],
+  );
+  assert.equal(byTag["食堂"], 66.7);
+  assert.equal(byTag["交通"], 33.3);
+  assert.equal(
+    summary.categories.reduce((sum, category) => sum + category.sharePercent, 0),
+    100,
+  );
+});
+
+test("weekly recap groups custom tags and untagged spending", () => {
+  const summary = summarizeWeek("2026-11-23", [
+    { amountCents: 3500, date: "2026-11-23", category: "" },
+    { amountCents: 3000, date: "2026-11-24", category: "理发" },
+    { amountCents: 1000, date: "2026-11-24", category: "食堂" },
+    { amountCents: -500, date: "2026-11-25", category: "买书" },
+    { amountCents: 9999, date: "2026-11-16", category: "交通" },
+  ]);
+  assert.deepEqual(
+    summary.categories.map((category) => category.category),
+    ["食堂", "理发", "买书", ""],
+  );
+  const byTag = Object.fromEntries(summary.categories.map((category) => [category.category, category]));
+  assert.equal(byTag["食堂"].sharePercent, 13.3);
+  assert.equal(byTag["理发"].sharePercent, 40);
+  assert.equal(byTag[""].sharePercent, 46.7);
+  assert.equal(byTag["买书"].expenseCents, 0);
+  assert.equal(byTag["买书"].refundCents, 500);
+  assert.equal(byTag["买书"].sharePercent, 0);
   assert.equal(
     summary.categories.reduce((sum, category) => sum + category.sharePercent, 0),
     100,

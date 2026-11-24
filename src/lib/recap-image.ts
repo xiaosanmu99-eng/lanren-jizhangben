@@ -1,12 +1,21 @@
+import { tagColor, tagLabel } from "@/lib/categories";
 import { formatMonthDay } from "@/lib/dates";
 import { formatYuan } from "@/lib/money";
-import { CATEGORY_COLOR } from "@/lib/categories";
 import type { WeekSummary } from "@/lib/types";
+
+function clipText(context: CanvasRenderingContext2D, text: string, maxWidth: number): string {
+  if (context.measureText(text).width <= maxWidth) return text;
+  const chars = [...text];
+  while (chars.length > 0 && context.measureText(`${chars.join("")}…`).width > maxWidth) chars.pop();
+  return chars.length > 0 ? `${chars.join("")}…` : "…";
+}
 
 export async function renderRecapPng(summary: WeekSummary): Promise<Blob> {
   if (document.fonts?.ready) await document.fonts.ready;
   const width = 360;
-  const height = 640;
+  const tagRows = summary.categories.length;
+  const tagBlock = tagRows > 0 ? 28 + tagRows * 36 : 40;
+  const height = 214 + tagBlock + 180;
   const canvas = document.createElement("canvas");
   canvas.width = width * 3;
   canvas.height = height * 3;
@@ -48,45 +57,49 @@ export async function renderRecapPng(summary: WeekSummary): Promise<Blob> {
   const empty = summary.expenseCents === 0 && summary.refundCents === 0;
   context.fillStyle = "#241910";
   context.font = "600 16px 'PingFang SC', 'WenQuanYi Micro Hei', sans-serif";
-  context.fillText(empty ? "这周还没有账" : "分类", 24, 220);
+  context.fillText(empty ? "这周还没有账" : "标签", 24, 214);
 
-  summary.categories.forEach((category, index) => {
-    const y = 236 + index * 36;
-    context.fillStyle = "#6E6256";
-    context.font = "14px 'PingFang SC', 'WenQuanYi Micro Hei', sans-serif";
-    context.fillText(category.category, 24, y + 14);
-    context.fillStyle = "#E7D9C6";
-    context.beginPath();
-    context.roundRect(92, y + 4, 120, 10, 5);
-    context.fill();
-    context.fillStyle = CATEGORY_COLOR[category.category];
-    context.beginPath();
-    context.roundRect(92, y + 4, Math.max(category.sharePercent > 0 ? 6 : 0, (category.sharePercent / 100) * 120), 10, 5);
-    context.fill();
-    context.fillStyle = "#241910";
-    context.font = "13px 'PingFang SC', 'WenQuanYi Micro Hei', sans-serif";
-    context.textAlign = "right";
-    context.fillText(`${formatYuan(category.netCents)} · ${category.sharePercent.toFixed(1)}%`, 336, y + 14);
-    context.textAlign = "left";
-  });
+  if (!empty) {
+    summary.categories.forEach((category, index) => {
+      const row = 242 + index * 36;
+      context.font = "14px 'PingFang SC', 'WenQuanYi Micro Hei', sans-serif";
+      context.fillStyle = "#6E6256";
+      context.fillText(clipText(context, tagLabel(category.category), 88), 24, row + 14);
+      context.fillStyle = "#E7D9C6";
+      context.beginPath();
+      context.roundRect(120, row + 4, 100, 10, 5);
+      context.fill();
+      context.fillStyle = tagColor(category.category);
+      context.beginPath();
+      context.roundRect(120, row + 4, Math.max(category.sharePercent > 0 ? 6 : 0, (category.sharePercent / 100) * 100), 10, 5);
+      context.fill();
+      context.fillStyle = "#241910";
+      context.font = "13px 'PingFang SC', 'WenQuanYi Micro Hei', sans-serif";
+      context.textAlign = "right";
+      context.fillText(`${formatYuan(category.netCents)} · ${category.sharePercent.toFixed(1)}%`, 336, row + 14);
+      context.textAlign = "left";
+    });
+  }
 
+  const dailyTitle = 214 + tagBlock + 16;
   context.fillStyle = "#241910";
   context.font = "600 16px 'PingFang SC', 'WenQuanYi Micro Hei', sans-serif";
-  context.fillText("每天结余", 24, 440);
+  context.fillText("每天结余", 24, dailyTitle);
   const peak = Math.max(...summary.days.map((day) => Math.abs(day.netCents)), 1);
+  const chartBase = dailyTitle + 96;
   summary.days.forEach((day, index) => {
     const x = 28 + index * 46;
     const bar = Math.round((Math.abs(day.netCents) / peak) * 72);
     context.fillStyle = day.netCents < 0 ? "#1E6B45" : "#C24B24";
-    context.fillRect(x, 528 - bar, 22, bar);
+    context.fillRect(x, chartBase - bar, 22, bar);
     context.fillStyle = "#6E6256";
     context.font = "12px 'PingFang SC', 'WenQuanYi Micro Hei', sans-serif";
-    context.fillText(day.weekday.replace("周", ""), x, 548);
+    context.fillText(day.weekday.replace("周", ""), x, chartBase + 18);
   });
 
   context.fillStyle = "#6E6256";
   context.font = "12px 'PingFang SC', 'WenQuanYi Micro Hei', sans-serif";
-  context.fillText("数字来自账本记录。没有定时推送。", 24, 612);
+  context.fillText("数字来自账本记录。没有定时推送。", 24, height - 24);
 
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
   if (!blob) throw new Error("没能生成图片");

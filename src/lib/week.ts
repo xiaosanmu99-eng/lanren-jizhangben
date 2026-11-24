@@ -1,8 +1,10 @@
 import { weekRange, weekdayLabel } from "@/lib/dates";
 import { sumCents } from "@/lib/money";
-import { CATEGORIES, type Category, type WeekSummary } from "@/lib/types";
+import { STARTER_TAGS, type WeekSummary } from "@/lib/types";
 
-type Spend = { amountCents: number; date: string; category: Category };
+type Spend = { amountCents: number; date: string; category: string };
+
+const STARTER = new Set<string>(STARTER_TAGS);
 
 export function shareTenths(values: number[]): number[] {
   const amounts = values.map((value) => BigInt(value));
@@ -24,6 +26,10 @@ export function shareTenths(values: number[]): number[] {
   return floors;
 }
 
+function tagKey(category: string): string {
+  return category.trim();
+}
+
 export function summarizeWeek(anchor: string, rows: Spend[]): WeekSummary {
   const week = weekRange(anchor);
   const included = rows.filter((row) => row.date >= week.start && row.date <= week.end);
@@ -39,19 +45,25 @@ export function summarizeWeek(anchor: string, rows: Spend[]): WeekSummary {
       netCents: expenseCents - refundCents,
     };
   });
-  const expenseByCategory = CATEGORIES.map((category) =>
+  const keys = new Set(included.map((row) => tagKey(row.category)));
+  const ordered = [
+    ...STARTER_TAGS.filter((tag) => keys.has(tag)),
+    ...[...keys].filter((tag) => tag && !STARTER.has(tag)).sort((left, right) => left.localeCompare(right, "zh-CN")),
+    ...(keys.has("") ? [""] : []),
+  ];
+  const expenseByCategory = ordered.map((category) =>
     sumCents(
       included
-        .filter((row) => row.category === category && row.amountCents > 0)
+        .filter((row) => tagKey(row.category) === category && row.amountCents > 0)
         .map((row) => row.amountCents),
     ),
   );
   const tenths = shareTenths(expenseByCategory);
-  const categories = CATEGORIES.map((category, index) => {
+  const categories = ordered.map((category, index) => {
     const expenseCents = expenseByCategory[index];
     const refundCents = sumCents(
       included
-        .filter((row) => row.category === category && row.amountCents < 0)
+        .filter((row) => tagKey(row.category) === category && row.amountCents < 0)
         .map((row) => -row.amountCents),
     );
     return {

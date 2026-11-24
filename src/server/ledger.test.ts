@@ -345,6 +345,129 @@ test("ingest saves only an unambiguous line and does not double insert", async (
   assert.equal(count[0].count, "1");
 });
 
+test("custom tags, untagged rows, and free-form ingest survive the schema", async () => {
+  const cookie = await ownerCookie();
+  await db.query("ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_category_length_check");
+  await db.query(
+    "ALTER TABLE transactions ADD CONSTRAINT transactions_category_legacy_check CHECK (category IN ('食堂', '其他餐饮', '交通', '购物', '其他'))",
+  );
+  try {
+    await db.query(
+      `INSERT INTO transactions (id, amount_cents, spent_on, merchant, category, note, external_id, created_at, updated_at)
+       VALUES ('legacyrow1', 1800, '2026-11-23', '食堂', '食堂', '味道一般', NULL, '2026-11-23T00:00:00.000Z', '2026-11-23T00:00:00.000Z')`,
+    );
+    await assert.rejects(() =>
+      db.query(
+        `INSERT INTO transactions (id, amount_cents, spent_on, merchant, category, note, external_id, created_at, updated_at)
+         VALUES ('blockedrow', 3500, '2026-11-23', '买书', '', '', NULL, '2026-11-23T00:00:00.000Z', '2026-11-23T00:00:00.000Z')`,
+      ),
+    );
+    await db.applySchema();
+
+    const legacy = await db.query<{ merchant: string; note: string; category: string }>(
+      "SELECT merchant, note, category FROM transactions WHERE id = 'legacyrow1'",
+    );
+    assert.deepEqual(legacy, [{ merchant: "食堂", note: "味道一般", category: "食堂" }]);
+
+    const book = await call(
+      handlers.createTransaction,
+      "/api/transactions",
+      { method: "POST", body: JSON.stringify({ amountCents: 3500, date: "2026-11-23", note: "买书", category: "" }) },
+      cookie,
+    );
+    assert.equal(book.status, 201);
+    assert.equal((book.body as { transaction: { category: string; merchant: string } }).transaction.category, "");
+    assert.equal((book.body as { transaction: { merchant: string } }).transaction.merchant, "买书");
+
+    const haircut = await call(
+      handlers.createTransaction,
+      "/api/transactions",
+      { method: "POST", body: JSON.stringify({ amountCents: 3000, date: "2026-11-24", merchant: "理发", category: "理发" }) },
+      cookie,
+    );
+    assert.equal(haircut.status, 201);
+    const longNote = "书".repeat(50);
+    const noted = await call(
+      handlers.createTransaction,
+      "/api/transactions",
+      { method: "POST", body: JSON.stringify({ amountCents: 2600, date: "2026-11-24", note: longNote, category: "书" }) },
+      cookie,
+    );
+    assert.equal(noted.status, 201);
+    const notedBody = (noted.body as { transaction: { merchant: string; note: string; category: string } }).transaction;
+    assert.equal(notedBody.category, "书");
+    assert.equal(notedBody.note, longNote);
+    assert.equal(notedBody.merchant, "书".repeat(40));
+
+    const tooLong = await call(
+      handlers.createTransaction,
+      "/api/transactions",
+      { method: "POST", body: JSON.stringify({ amountCents: 100, date: "2026-11-24", merchant: "超长", category: "标".repeat(21) }) },
+      cookie,
+    );
+    assert.equal(tooLong.status, 400);
+
+    const byTag = await call(handlers.listTransactions, "/api/transactions?category=" + encodeURIComponent("理发"), {}, cookie);
+    assert.deepEqual(
+      (byTag.body as { transactions: { merchant: string }[] }).transactions.map((item) => item.merchant),
+      ["理发"],
+    );
+    const untagged = await call(handlers.listTransactions, "/api/transactions?untagged=1", {}, cookie);
+    assert.deepEqual(
+      (untagged.body as { transactions: { merchant: string }[] }).transactions.map((item) => item.merchant),
+      ["买书"],
+    );
+
+    const recap = await call(handlers.getRecap, "/api/recap?anchor=2026-11-23", {}, cookie);
+    const names = (recap.body as { categories: { category: string; sharePercent: number }[] }).categories.map(
+      (item) => item.category,
+    );
+    assert.deepEqual(names, ["食堂", "理发", "书", ""]);
+
+    const spoken = await call(handlers.ingest, "/api/ingest", {
+      method: "POST",
+      headers: { authorization: `Bearer ${process.env.LEDGER_INGEST_TOKEN}` },
+      body: JSON.stringify({ text: "买书 35", externalId: "msg-book" }),
+    });
+    assert.equal(spoken.status, 201);
+    const spokenBody = (spoken.body as { transaction: { amountCents: number; merchant: string; category: string } }).transaction;
+    assert.equal(spokenBody.amountCents, 3500);
+    assert.equal(spokenBody.merchant, "买书");
+    assert.equal(spokenBody.category, "");
+    const hairSpoken = await call(handlers.ingest, "/api/ingest", {
+      method: "POST",
+      headers: { authorization: `Bearer ${process.env.LEDGER_INGEST_TOKEN}` },
+      body: JSON.stringify({ text: "理发 30" }),
+    });
+    assert.equal(hairSpoken.status, 201);
+    assert.equal((hairSpoken.body as { transaction: { category: string; merchant: string } }).transaction.category, "");
+    assert.equal((hairSpoken.body as { transaction: { merchant: string } }).transaction.merchant, "理发");
+
+    const vagueAmount = await call(handlers.ingest, "/api/ingest", {
+      method: "POST",
+      headers: { authorization: `Bearer ${process.env.LEDGER_INGEST_TOKEN}` },
+      body: JSON.stringify({ text: "18" }),
+    });
+    assert.equal(vagueAmount.status, 409);
+    const reasons = (vagueAmount.body as { reasons: string[] }).reasons;
+    assert.equal(reasons.includes("没有识别到分类"), false);
+    assert.equal(reasons.includes("写一句说明，或选一个标签"), true);
+
+    await db.applySchema();
+    const checks = await db.query<{ definition: string }>(
+      `SELECT pg_get_constraintdef(oid) AS definition
+       FROM pg_constraint
+       WHERE conrelid = 'transactions'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) ILIKE '%category%'`,
+    );
+    assert.equal(checks.some((item) => item.definition.includes("category IN")), false);
+    assert.equal(checks.some((item) => item.definition.includes("char_length(category)")), true);
+    const count = await db.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM transactions");
+    assert.equal(Number(count[0].count) >= 4, true);
+  } finally {
+    await db.applySchema();
+  }
+});
+
 test("clearing the book requires the confirmation word and a session", async () => {
   const cookie = await ownerCookie();
   await call(

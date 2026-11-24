@@ -61,10 +61,11 @@ test("dates are civil Shanghai dates and do not become amounts", () => {
   assert.equal(monthDay.draft.amountCents, 300);
 });
 
-test("ambiguous lines stay unconfirmed and do not invent a category or rounded amount", () => {
+test("ambiguous lines stay unconfirmed and do not invent a rounded amount", () => {
   const onlyAmount = parseEntry("18", today);
   assert.equal(onlyAmount.status, "needs_confirmation");
-  assert.ok(onlyAmount.reasons.includes("missing_category"));
+  assert.deepEqual(onlyAmount.reasons, ["missing_merchant"]);
+  assert.equal(onlyAmount.draft.category, null);
   assert.equal(onlyAmount.draft.amountCents, 1800);
 
   const noAmount = parseEntry("食堂", today);
@@ -98,4 +99,37 @@ test("the same sentence always parses the same way", () => {
 
 test("empty text is not an error", () => {
   assert.equal(parseEntry("   ", today).status, "empty");
+});
+
+test("free-form sentences are ready without a legacy category", () => {
+  const book = parseEntry("买书 35", today);
+  assert.equal(book.status, "ready");
+  assert.equal(book.draft.amountCents, 3500);
+  assert.equal(book.draft.category, null);
+  assert.equal(book.draft.merchant, "买书");
+  assert.deepEqual(book.reasons, []);
+
+  const haircut = parseEntry("理发 30", today);
+  assert.equal(haircut.status, "ready");
+  assert.equal(haircut.draft.amountCents, 3000);
+  assert.equal(haircut.draft.category, null);
+  assert.equal(haircut.draft.merchant, "理发");
+
+  const refund = parseEntry("退款 理发 30", today);
+  assert.equal(refund.status, "ready");
+  assert.equal(refund.draft.amountCents, -3000);
+  assert.equal(refund.draft.merchant, "理发");
+  assert.equal(refund.draft.category, null);
+});
+
+test("a known keyword only suggests a tag and does not block other wording", () => {
+  const suggested = parseEntry("买书 食堂 35", today);
+  assert.equal(suggested.status, "ready");
+  assert.equal(suggested.draft.category, "食堂");
+  assert.equal(suggested.draft.merchant, "买书 食堂");
+  assert.equal(suggested.draft.amountCents, 3500);
+
+  const tooLong = parseEntry(`${"书".repeat(81)} 12`, today);
+  assert.equal(tooLong.status, "needs_confirmation");
+  assert.ok(tooLong.reasons.includes("description_too_long"));
 });
