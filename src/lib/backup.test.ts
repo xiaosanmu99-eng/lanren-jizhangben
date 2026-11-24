@@ -38,6 +38,37 @@ test("import warns on repeated ids and identical spending without writing", () =
   assert.equal(plan.inserted, 0);
 });
 
+test("import keeps legacy categories and accepts custom or empty tags", () => {
+  const backup = {
+    app: "懒人记账本",
+    schema: 1,
+    transactions: [
+      record({ id: "legacyitem", amountCents: 1800, merchant: "食堂", category: "食堂", note: "味道一般" }),
+      record({ id: "customitem", amountCents: 3000, merchant: "理发", category: "理发" }),
+      record({ id: "plainitem1", amountCents: 3500, merchant: "买书", category: "" }),
+      record({ id: "notemerch1", amountCents: 1200, merchant: "", category: "书", note: "周末买书" }),
+      record({ id: "tagonlyitem", amountCents: 800, merchant: "", category: "交通" }),
+      record({ id: "toolongtag1", amountCents: 800, merchant: "东西", category: "标".repeat(21) }),
+      { id: "emptyrow01", amountCents: 800, date: "2026-11-23", merchant: "", category: "", note: "" },
+    ],
+  };
+  const plan = planImport([], backup);
+  assert.deepEqual(
+    plan.fresh.map((item) => [item.id, item.merchant, item.category, item.note]),
+    [
+      ["legacyitem", "食堂", "食堂", "味道一般"],
+      ["customitem", "理发", "理发", ""],
+      ["plainitem1", "买书", "", ""],
+      ["notemerch1", "周末买书", "书", "周末买书"],
+      ["tagonlyitem", "交通", "交通", ""],
+    ],
+  );
+  assert.deepEqual(
+    plan.invalid.map((item) => item.index),
+    [5, 6],
+  );
+});
+
 test("a foreign backup shape is rejected", () => {
   const plan = planImport([], { app: "other", schema: 2, transactions: [] });
   assert.equal(plan.freshCount, 0);

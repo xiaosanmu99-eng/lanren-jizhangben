@@ -1,7 +1,8 @@
 import { CATEGORY_RULES } from "@/lib/categories";
 import { addDays, isValidYmd } from "@/lib/dates";
 import { yuanToCents } from "@/lib/money";
-import type { Category } from "@/lib/types";
+import { DESCRIPTION_MAX_LENGTH } from "@/lib/record";
+import type { StarterTag } from "@/lib/types";
 
 export const REASON_TEXT = {
   missing_amount: "没有识别到金额",
@@ -9,9 +10,9 @@ export const REASON_TEXT = {
   excess_precision: "小数超过两位，请改成以分为止",
   zero_amount: "金额是 0",
   amount_too_large: "金额太大",
-  missing_category: "没有识别到分类",
-  multiple_categories: "一句话里有不止一种分类",
-  missing_merchant: "没有商户或说明",
+  multiple_categories: "一句话里有不止一个标签",
+  missing_merchant: "写一句说明，或选一个标签",
+  description_too_long: "说明最多 80 个字",
   invalid_date: "日期无效",
   multiple_dates: "有不止一个日期",
 } as const;
@@ -22,7 +23,7 @@ export type Draft = {
   amountCents: number | null;
   amountInput: string;
   refund: boolean;
-  category: Category | null;
+  category: StarterTag | null;
   merchant: string;
   date: string | null;
   note: string;
@@ -77,12 +78,12 @@ export function parseEntry(input: string, today: string): ParseOutcome {
   if (chosen.kind === "precision") reasons.push("excess_precision");
   if (chosen.kind === "zero") reasons.push("zero_amount");
   if (chosen.kind === "range") reasons.push("amount_too_large");
-  if (categories.length === 0) reasons.push("missing_category");
   if (categories.length > 1) reasons.push("multiple_categories");
 
   const category = categories.length === 1 ? categories[0] : null;
-  const resolvedMerchant = merchant || (category && reasons.every((reason) => reason !== "multiple_categories") ? category : "");
+  const resolvedMerchant = merchant || (category && !reasons.includes("multiple_categories") ? category : "");
   if (!resolvedMerchant) reasons.push("missing_merchant");
+  if ([...resolvedMerchant].length > DESCRIPTION_MAX_LENGTH) reasons.push("description_too_long");
 
   const amount = chosen.kind === "one" ? yuanToCents(chosen.raw) : null;
   const amountCents =
@@ -184,8 +185,8 @@ function leadingMinus(source: string, start: number): { refund: boolean; spanSta
   return { refund: false, spanStart: start };
 }
 
-function findCategories(source: string): Category[] {
-  const hits: { category: Category; start: number; end: number }[] = [];
+function findCategories(source: string): StarterTag[] {
+  const hits: { category: StarterTag; start: number; end: number }[] = [];
   for (const rule of CATEGORY_RULES) {
     for (const word of rule.words) {
       let from = 0;
