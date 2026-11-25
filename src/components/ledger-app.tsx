@@ -2,19 +2,18 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { ApiError, api } from "@/lib/client-api";
-import { hasUntagged, tagColor, tagLabel, tagsInLedger } from "@/lib/categories";
 import { addDays, monthRange, formatMonthDay, weekRange, weekdayLabel } from "@/lib/dates";
 import { filterTransactions } from "@/lib/filter";
-import { formatYuan, sumCents } from "@/lib/money";
+import { formatYuan, sumCents, yuanInputFromCents } from "@/lib/money";
 import { parseEntry, REASON_TEXT } from "@/lib/parse";
 import { renderRecapPng } from "@/lib/recap-image";
-import { entryDescription } from "@/lib/record";
-import type { ImportReport, SessionState, Transaction, WeekSummary } from "@/lib/types";
+import { CATEGORY_COLOR } from "@/lib/categories";
+import { CATEGORIES, type Category, type ImportReport, type SessionState, type Transaction, type WeekSummary } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { EntryFields, emptyFields, fieldsFromDraft, fieldsFromTransaction, payloadFromFields, type FieldValues } from "@/components/entry-fields";
+import { EntryFields, emptyFields, fieldsFromDraft, payloadFromFields, type FieldValues } from "@/components/entry-fields";
 
 type Tab = "capture" | "list" | "recap" | "backup";
 
@@ -99,7 +98,7 @@ export function LedgerApp() {
               {tab === "capture" ? (
                 <CapturePanel
                   today={session.today}
-                  transactions={transactions}
+                  count={transactions.length}
                   onSaved={async (text) => {
                     setNotice(text);
                     await load();
@@ -240,15 +239,13 @@ function Field({ label, id, children }: { label: string; id: string; children: R
 
 function CapturePanel({
   today,
-  transactions,
+  count,
   onSaved,
 }: {
   today: string;
-  transactions: Transaction[];
+  count: number;
   onSaved: (message: string) => Promise<void>;
 }) {
-  const count = transactions.length;
-  const knownTags = useMemo(() => tagsInLedger(transactions), [transactions]);
   const [mode, setMode] = useState<"sentence" | "form">("sentence");
   const [text, setText] = useState("");
   const [fields, setFields] = useState<FieldValues>(() => emptyFields(today));
@@ -293,7 +290,7 @@ function CapturePanel({
       {count === 0 ? (
         <section className="rounded-3xl bg-card p-4">
           <h2 className="font-seal text-2xl">账本是空的</h2>
-          <p className="mt-2 text-sm leading-6 text-[#6E6256]">花完写「买书 35」或「理发 30」。有金额和一句说明就能记下，标签可以不选。看不清金额或日期时会先让你确认。</p>
+          <p className="mt-2 text-sm leading-6 text-[#6E6256]">食堂吃完，写「食堂 18」。句子清楚就直接记下；看不清的地方会先让你确认，不会自己编一笔。</p>
         </section>
       ) : null}
       {mode === "sentence" ? (
@@ -315,16 +312,14 @@ function CapturePanel({
               setFields(fieldsFromDraft(parseEntry(next, today).draft, today));
             }}
             className="h-12 rounded-2xl bg-card px-3 text-base"
-            placeholder="例如：买书 35"
+            placeholder="例如：食堂 18.5"
           />
           {parsed.status === "ready" && !editing ? (
             <article className="rounded-3xl bg-card p-4">
               <p className="text-sm text-[#6E6256]">将记下</p>
               <p className="num mt-1 text-2xl">{parsed.draft.refund ? "退款 " : ""}¥{formatYuan(Math.abs(parsed.draft.amountCents ?? 0))}</p>
-              <p className="mt-1 text-base">{parsed.draft.merchant}</p>
-              <p className="mt-1 text-sm text-[#6E6256]">
-                {parsed.draft.category ? `${parsed.draft.category} · ` : ""}
-                {parsed.draft.date}
+              <p className="mt-1 text-sm">
+                {parsed.draft.category} · {parsed.draft.merchant} · {parsed.draft.date}
               </p>
               <button type="button" className="mt-3 text-sm text-[#C24B24] underline-offset-4 hover:underline" onClick={() => setEditing(true)}>
                 改一下
@@ -341,7 +336,7 @@ function CapturePanel({
               </ul>
             </div>
           ) : null}
-          {showFields ? <EntryFields idPrefix="capture" values={fields} knownTags={knownTags} onChange={setFields} /> : null}
+          {showFields ? <EntryFields idPrefix="capture" values={fields} onChange={setFields} /> : null}
           {error ? <p className="text-sm text-[#9C2C2C]">{error}</p> : null}
           <Button type="submit" disabled={pending || (showFields ? !checked.ok : parsed.status !== "ready")} className="h-12 rounded-2xl text-base">
             {parsed.status === "needs_confirmation" || editing ? "确认后记下" : "记下这笔"}
@@ -355,7 +350,7 @@ function CapturePanel({
             void save(payloadFromFields(fields));
           }}
         >
-          <EntryFields idPrefix="manual" values={fields} knownTags={knownTags} onChange={setFields} />
+          <EntryFields idPrefix="manual" values={fields} onChange={setFields} />
           {error ? <p className="text-sm text-[#9C2C2C]">{error}</p> : null}
           <Button type="submit" disabled={pending || !payloadFromFields(fields).ok} className="h-12 rounded-2xl text-base">
             记下这笔
@@ -375,7 +370,7 @@ function ListPanel({
   transactions: Transaction[];
   onChanged: (message: string) => Promise<void>;
 }) {
-  const [tagFilter, setTagFilter] = useState<{ kind: "all" } | { kind: "untagged" } | { kind: "tag"; value: string }>({ kind: "all" });
+  const [category, setCategory] = useState<Category | "">("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [q, setQ] = useState("");
@@ -383,25 +378,25 @@ function ListPanel({
   const [fields, setFields] = useState<FieldValues>(() => emptyFields(today));
   const [removing, setRemoving] = useState<Transaction | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const knownTags = useMemo(() => tagsInLedger(transactions), [transactions]);
-  const filtered = filterTransactions(transactions, {
-    tag: tagFilter.kind === "tag" ? tagFilter.value : undefined,
-    untagged: tagFilter.kind === "untagged",
-    from,
-    to,
-    q,
-  });
+  const filtered = filterTransactions(transactions, { category, from, to, q });
   const week = weekRange(today);
   const month = monthRange(today);
 
   function edit(item: Transaction) {
     setEditing(item);
-    setFields(fieldsFromTransaction(item));
+    setFields({
+      amountInput: yuanInputFromCents(item.amountCents),
+      refund: item.amountCents < 0,
+      category: item.category,
+      merchant: item.merchant,
+      date: item.date,
+      note: item.note,
+    });
   }
 
   async function saveEdit() {
     if (!editing) return;
-    const payload = payloadFromFields(fields, editing);
+    const payload = payloadFromFields(fields);
     if (!payload.ok) {
       setError(payload.message);
       return;
@@ -435,18 +430,15 @@ function ListPanel({
 
   return (
     <div className="grid gap-4">
-      <Label htmlFor="keyword">搜索说明或标签</Label>
+      <Label htmlFor="keyword">搜索商户、备注或分类</Label>
       <Input id="keyword" value={q} onChange={(event) => setQ(event.target.value)} className="h-12 rounded-2xl bg-card px-3 text-base" placeholder="搜索" />
-      <div className="flex flex-wrap gap-2" role="group" aria-label="按标签筛选">
-        <Chip pressed={tagFilter.kind === "all"} onClick={() => setTagFilter({ kind: "all" })}>全部</Chip>
-        {knownTags.map((item) => (
-          <Chip key={item} pressed={tagFilter.kind === "tag" && tagFilter.value === item} onClick={() => setTagFilter({ kind: "tag", value: item })}>
+      <div className="flex flex-wrap gap-2" role="group" aria-label="按分类筛选">
+        <Chip pressed={category === ""} onClick={() => setCategory("")}>全部</Chip>
+        {CATEGORIES.map((item) => (
+          <Chip key={item} pressed={category === item} onClick={() => setCategory(item)}>
             {item}
           </Chip>
         ))}
-        {hasUntagged(transactions) ? (
-          <Chip pressed={tagFilter.kind === "untagged"} onClick={() => setTagFilter({ kind: "untagged" })}>无标签</Chip>
-        ) : null}
       </div>
       <div className="flex flex-wrap gap-2" role="group" aria-label="按日期筛选">
         <Chip pressed={!from && !to} onClick={() => { setFrom(""); setTo(""); }}>全部日期</Chip>
@@ -471,16 +463,13 @@ function ListPanel({
           {group.items.map((item) => (
             <article key={item.id} className="rounded-3xl bg-card p-4">
               <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h3 className="break-words text-base font-medium">{entryDescription(item)}</h3>
-                  {item.category.trim() ? (
-                    <p className="mt-2">
-                      <span className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-[#F6F0E6] px-2.5 py-1 text-xs text-[#241910]">
-                        <span className="size-2 shrink-0 rounded-full" style={{ background: tagColor(item.category) }} aria-hidden />
-                        <span className="truncate">{item.category}</span>
-                      </span>
-                    </p>
-                  ) : null}
+                <div>
+                  <h3 className="text-base font-medium">{item.merchant}</h3>
+                  <p className="mt-1 text-sm text-[#6E6256]">
+                    <span className="mr-2 inline-block size-2 rounded-full" style={{ background: CATEGORY_COLOR[item.category] }} aria-hidden />
+                    {item.category}
+                    {item.note ? ` · ${item.note}` : ""}
+                  </p>
                 </div>
                 <p className={`num text-lg ${item.amountCents < 0 ? "text-[#1E6B45]" : ""}`}>
                   {item.amountCents < 0 ? "退款 " : ""}¥{formatYuan(Math.abs(item.amountCents))}
@@ -505,7 +494,7 @@ function ListPanel({
             <DialogTitle>改这笔</DialogTitle>
             <DialogDescription>保存后写回服务器上的账。</DialogDescription>
           </DialogHeader>
-          <EntryFields idPrefix="edit" values={fields} knownTags={knownTags} onChange={setFields} />
+          <EntryFields idPrefix="edit" values={fields} onChange={setFields} />
           <Button type="button" className="h-12 rounded-2xl text-base" onClick={() => void saveEdit()}>
             保存
           </Button>
@@ -516,7 +505,7 @@ function ListPanel({
           <DialogHeader>
             <DialogTitle>删掉这笔？</DialogTitle>
             <DialogDescription>
-              {removing ? `${entryDescription(removing)} ¥${formatYuan(Math.abs(removing.amountCents))} 会从服务器账本里去掉。` : ""}
+              {removing ? `${removing.merchant} ¥${formatYuan(Math.abs(removing.amountCents))} 会从服务器账本里去掉。` : ""}
             </DialogDescription>
           </DialogHeader>
           <Button type="button" variant="destructive" className="h-12 rounded-2xl text-base" onClick={() => void remove()}>
@@ -578,24 +567,22 @@ function RecapPanel({ today }: { today: string }) {
             <Stat label="结余" cents={summary.netCents} />
           </div>
           {summary.expenseCents === 0 && summary.refundCents === 0 ? <p className="rounded-3xl bg-card p-4 text-sm">这周还没有账。</p> : null}
-          {summary.categories.length > 0 ? (
-            <section className="rounded-3xl bg-card p-4">
-              <h2 className="text-base font-medium">标签</h2>
-              <ul className="mt-3 grid gap-3">
-                {summary.categories.map((category) => (
-                  <li key={category.category || "untagged"}>
-                    <div className="flex justify-between gap-3 text-sm">
-                      <span className="min-w-0 break-words">{tagLabel(category.category)}</span>
-                      <span className="num shrink-0">¥{formatYuan(category.netCents)} · {category.sharePercent.toFixed(1)}%</span>
-                    </div>
-                    <div className="mt-1 h-2 rounded-full bg-[#F3E6D6]">
-                      <div className="h-2 rounded-full" style={{ width: `${category.sharePercent}%`, background: tagColor(category.category) }} />
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ) : null}
+          <section className="rounded-3xl bg-card p-4">
+            <h2 className="text-base font-medium">分类占比</h2>
+            <ul className="mt-3 grid gap-3">
+              {summary.categories.map((category) => (
+                <li key={category.category}>
+                  <div className="flex justify-between text-sm">
+                    <span>{category.category}</span>
+                    <span className="num">¥{formatYuan(category.netCents)} · {category.sharePercent.toFixed(1)}%</span>
+                  </div>
+                  <div className="mt-1 h-2 rounded-full bg-[#F3E6D6]">
+                    <div className="h-2 rounded-full" style={{ width: `${category.sharePercent}%`, background: CATEGORY_COLOR[category.category] }} />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
           <section className="rounded-3xl bg-card p-4">
             <h2 className="text-base font-medium">每天结余</h2>
             <div className="mt-4 flex h-32 items-end justify-between gap-1">
@@ -620,7 +607,7 @@ function RecapPanel({ today }: { today: string }) {
           <Button type="button" className="h-12 rounded-2xl text-base" onClick={() => void download()}>
             导出这周的复盘图
           </Button>
-          <p className="text-sm leading-6 text-[#6E6256]">每周日 20:00 的自动复盘还没接上，这里也没有定时任务。图只能按你点的这一下，用当前账本里的数字画出来。</p>
+          <p className="text-sm leading-6 text-[#6E6256]">每周日 20:00 会自动把这周的复盘推送到聊天里。这里的图还是按你点的这一下，用当前账本里的数字画出来。</p>
         </>
       ) : null}
     </div>
@@ -709,13 +696,13 @@ function BackupPanel({
         }}
       />
       <section className="rounded-3xl bg-card p-4 text-sm leading-6 text-[#6E6256]">
-        <h2 className="text-base font-medium text-[#241910]">还没接上的两件事</h2>
+        <h2 className="text-base font-medium text-[#241910]">已经接上的两件事</h2>
         <p className="mt-2">
           {ingestionConfigured
-            ? "记账入口已经配置了令牌，但没有接上微信或助手，也不会自己收消息。"
+            ? "聊天里发一句话就能记账，助手会直接写进这本账。"
             : "聊天里把消费发给助手、再写入这本账：接口留着，入口令牌没配，也没有接上任何聊天。"}
         </p>
-        <p className="mt-2">每周日 20:00（上海时间）自动复盘没有定时任务，不会自己跑。</p>
+        <p className="mt-2">每周日 20:00（上海时间）自动复盘已接通，会推送到聊天里。</p>
       </section>
       {error ? <p className="text-sm text-[#9C2C2C]">{error}</p> : null}
       <Button
@@ -733,7 +720,7 @@ function BackupPanel({
         <DialogContent>
           <DialogHeader>
             <DialogTitle>导入前看一眼</DialogTitle>
-            <DialogDescription>编号已经在账上的会跳过。日期、金额、标签、说明都相同的，默认不写入。</DialogDescription>
+            <DialogDescription>编号已经在账上的会跳过。日期、金额、分类、商户都相同的，默认不写入。</DialogDescription>
           </DialogHeader>
           {report ? (
             <div className="grid gap-2 text-sm leading-6">

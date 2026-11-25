@@ -1,11 +1,6 @@
-export const STARTER_TAGS = ["食堂", "其他餐饮", "交通", "购物", "其他"] as const;
+export const CATEGORIES = ["食堂", "其他餐饮", "交通", "购物", "其他"] as const;
 
-export type StarterTag = (typeof STARTER_TAGS)[number];
-
-/** Free-form tag stored on a row. An empty string means the entry is untagged. */
-export type Category = string;
-
-export const CATEGORIES = STARTER_TAGS;
+export type Category = (typeof CATEGORIES)[number];
 
 export type Transaction = {
   id: string;
@@ -55,7 +50,7 @@ export type SessionState = {
   scope: "preview" | "hosted";
   notice: string;
   ingestionConfigured: boolean;
-  scheduleConfigured: false;
+  scheduleConfigured: boolean;
 };
 
 export type ImportSuspect = {
