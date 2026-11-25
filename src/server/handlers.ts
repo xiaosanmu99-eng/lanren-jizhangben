@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { planImport, toBackup } from "@/lib/backup";
 import { isValidYmd, shanghaiToday } from "@/lib/dates";
 import { parseEntry, REASON_TEXT } from "@/lib/parse";
-import { parseEditable } from "@/lib/record";
-import { CATEGORIES, type Category, type Transaction } from "@/lib/types";
+import { charLength, parseEditable, splitDescription, TAG_MAX_LENGTH } from "@/lib/record";
+import type { Transaction } from "@/lib/types";
 import { summarizeWeek } from "@/lib/week";
 import { coerceCents, sumCents } from "@/lib/money";
 import {
@@ -40,7 +40,7 @@ type Row = {
   amount_cents: number | string;
   spent_on: string;
   merchant: string;
-  category: Category;
+  category: string;
   note: string;
   external_id: string | null;
   created_at: string;
@@ -154,16 +154,23 @@ export const listTransactions = withErrors(async (request) => {
   if (denied) return denied;
   const url = new URL(request.url);
   const category = url.searchParams.get("category");
+  const untagged = url.searchParams.get("untagged") === "1";
   const from = url.searchParams.get("from");
   const to = url.searchParams.get("to");
   const keyword = url.searchParams.get("q")?.trim() ?? "";
-  if (category && !CATEGORIES.includes(category as Category)) throw new HttpError(400, "分类不在可选范围里");
+  if (category && charLength(category) > TAG_MAX_LENGTH) throw new HttpError(400, "标签最多 20 个字");
   if ((from && !isValidYmd(from)) || (to && !isValidYmd(to))) throw new HttpError(400, "日期无效");
   if ([...keyword].length > 40) throw new HttpError(400, "搜索太长了");
   const pattern = keyword ? `%${keyword.replace(/[\\%_]/g, (mark) => `\\${mark}`)}%` : null;
   const rows = await query<Row>(
     `SELECT ${COLUMNS} FROM transactions
-     WHERE ($1::text IS NULL OR category = $1)
+     WHERE (
+       ($5::boolean IS TRUE AND btrim(category) = '')
+       OR (
+         $5::boolean IS NOT TRUE
+         AND ($1::text IS NULL OR category = $1)
+       )
+     )
        AND ($2::text IS NULL OR spent_on >= $2)
        AND ($3::text IS NULL OR spent_on <= $3)
        AND (
@@ -174,7 +181,7 @@ export const listTransactions = withErrors(async (request) => {
        )
      ORDER BY spent_on DESC, created_at DESC, id DESC
      LIMIT 5001`,
-    [category, from, to, pattern],
+    [untagged ? null : category || null, from, to, pattern, untagged],
   );
   const truncated = rows.length > 5000;
   const transactions = rows.slice(0, 5000).map(toTransaction);
@@ -334,16 +341,16 @@ export const ingest = withErrors(async (request) => {
     if (existing[0]) return json({ status: "duplicate", duplicate: true, transaction: toTransaction(existing[0]) });
   }
   const parsed = parseEntry(body.text, shanghaiToday());
-  if (parsed.status !== "ready" || parsed.draft.amountCents == null || !parsed.draft.category || !parsed.draft.date) {
-    return json(
-      {
-        status: "needs_confirmation",
-        duplicate: false,
-        reasons: parsed.reasons.map((reason) => REASON_TEXT[reason]),
-        draft: parsed.draft,
-      },
-      409,
-    );
+  const stored =
+    parsed.status === "ready" && parsed.draft.amountCents != null && parsed.draft.date
+      ? splitDescription(parsed.draft.merchant, parsed.draft.category ?? "")
+      : null;
+  if (!stored || !stored.ok || parsed.draft.amountCents == null || !parsed.draft.date) {
+    const reasons =
+      parsed.reasons.length > 0
+        ? parsed.reasons.map((reason) => REASON_TEXT[reason])
+        : [stored && !stored.ok ? stored.reason : "写一句说明，或选一个标签"];
+    return json({ status: "needs_confirmation", duplicate: false, reasons, draft: parsed.draft }, 409);
   }
   const now = new Date().toISOString();
   const rows = await query<Row>(
@@ -354,9 +361,9 @@ export const ingest = withErrors(async (request) => {
       randomUUID(),
       parsed.draft.amountCents,
       parsed.draft.date,
-      parsed.draft.merchant,
-      parsed.draft.category,
-      "",
+      stored.merchant,
+      stored.category,
+      stored.note,
       externalId,
       now,
     ],
