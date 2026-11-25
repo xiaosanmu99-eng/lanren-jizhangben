@@ -325,9 +325,16 @@ export const ingest = withErrors(async (request) => {
   const header = request.headers.get("authorization") ?? "";
   const supplied = header.startsWith("Bearer ") ? header.slice(7) : "";
   if (!supplied || !safeEqual(supplied, secret)) throw new HttpError(401, "记账入口拒绝了这个请求");
-  const body = (await readJson(request)) as { text?: unknown; externalId?: unknown };
+  const body = (await readJson(request)) as { text?: unknown; externalId?: unknown; category?: unknown };
   if (typeof body.text !== "string" || body.text.trim().length === 0 || [...body.text].length > 200) {
     throw new HttpError(400, "缺少要记的那句话");
+  }
+  let categoryOverride: string | null = null;
+  if (body.category != null && body.category !== "") {
+    if (typeof body.category !== "string") throw new HttpError(400, "标签格式不对");
+    categoryOverride = body.category.trim();
+    if (charLength(categoryOverride) > TAG_MAX_LENGTH) throw new HttpError(400, "标签最多 20 个字");
+    if (!categoryOverride) categoryOverride = null;
   }
   const externalId =
     body.externalId == null || body.externalId === ""
@@ -341,14 +348,24 @@ export const ingest = withErrors(async (request) => {
     if (existing[0]) return json({ status: "duplicate", duplicate: true, transaction: toTransaction(existing[0]) });
   }
   const parsed = parseEntry(body.text, shanghaiToday());
+  // An explicit tag from the caller wins over the keyword-detected starter
+  // tag, and it can stand in for the description when the line is amount-only.
+  const effectiveCategory = categoryOverride ?? parsed.draft.category ?? "";
+  const merchantText =
+    parsed.draft.merchant && parsed.draft.merchant !== (parsed.draft.category ?? "")
+      ? parsed.draft.merchant
+      : parsed.draft.merchant || effectiveCategory;
+  const blockingReasons = parsed.reasons.filter(
+    (reason) => !(reason === "missing_merchant" && effectiveCategory),
+  );
   const stored =
-    parsed.status === "ready" && parsed.draft.amountCents != null && parsed.draft.date
-      ? splitDescription(parsed.draft.merchant, parsed.draft.category ?? "")
+    blockingReasons.length === 0 && parsed.draft.amountCents != null && parsed.draft.date
+      ? splitDescription(merchantText, effectiveCategory)
       : null;
   if (!stored || !stored.ok || parsed.draft.amountCents == null || !parsed.draft.date) {
     const reasons =
-      parsed.reasons.length > 0
-        ? parsed.reasons.map((reason) => REASON_TEXT[reason])
+      blockingReasons.length > 0
+        ? blockingReasons.map((reason) => REASON_TEXT[reason])
         : [stored && !stored.ok ? stored.reason : "写一句说明，或选一个标签"];
     return json({ status: "needs_confirmation", duplicate: false, reasons, draft: parsed.draft }, 409);
   }

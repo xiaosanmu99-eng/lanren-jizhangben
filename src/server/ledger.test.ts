@@ -368,6 +368,45 @@ test("ingest saves only an unambiguous line and does not double insert", async (
   assert.equal(count[0].count, "1");
 });
 
+test("ingest accepts an explicit custom tag", async () => {
+  const auth = { authorization: `Bearer ${process.env.LEDGER_INGEST_TOKEN}` };
+  const tagged = await call(handlers.ingest, "/api/ingest", {
+    method: "POST",
+    headers: auth,
+    body: JSON.stringify({ text: "橘子 10.5", category: "拼多多", externalId: "msg-tag-1" }),
+  });
+  assert.equal(tagged.status, 201);
+  const tx = (
+    tagged.body as { transaction: { merchant: string; category: string; amountCents: number } }
+  ).transaction;
+  assert.equal(tx.merchant, "橘子");
+  assert.equal(tx.category, "拼多多");
+  assert.equal(tx.amountCents, 1050);
+
+  const override = await call(handlers.ingest, "/api/ingest", {
+    method: "POST",
+    headers: auth,
+    body: JSON.stringify({ text: "食堂 12", category: "拼多多", externalId: "msg-tag-2" }),
+  });
+  assert.equal(override.status, 201);
+  assert.equal((override.body as { transaction: { category: string } }).transaction.category, "拼多多");
+
+  const tagOnly = await call(handlers.ingest, "/api/ingest", {
+    method: "POST",
+    headers: auth,
+    body: JSON.stringify({ text: "10.5", category: "拼多多", externalId: "msg-tag-3" }),
+  });
+  assert.equal(tagOnly.status, 201);
+  assert.equal((tagOnly.body as { transaction: { merchant: string } }).transaction.merchant, "拼多多");
+
+  const tooLong = await call(handlers.ingest, "/api/ingest", {
+    method: "POST",
+    headers: auth,
+    body: JSON.stringify({ text: "橘子 10.5", category: "标".repeat(21), externalId: "msg-tag-4" }),
+  });
+  assert.equal(tooLong.status, 400);
+});
+
 test("custom tags, untagged rows, and free-form ingest survive the schema", async () => {
   const cookie = await ownerCookie();
   await db.query("ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_category_length_check");
