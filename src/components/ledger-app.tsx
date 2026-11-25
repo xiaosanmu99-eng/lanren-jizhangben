@@ -131,7 +131,9 @@ export function LedgerApp() {
           ) : null}
         </main>
         {session?.authenticated ? (
-          <nav className="grid shrink-0 grid-cols-4 border-t border-[#E4D5C3] bg-[#FFFBF5] pb-[env(safe-area-inset-bottom)]" aria-label="账本栏目">
+          {/* Extra bottom padding lifts the tabs above Netlify's floating
+              "Powered by Netlify" badge in the bottom-right corner. */}
+          <nav className="grid shrink-0 grid-cols-4 border-t border-[#E4D5C3] bg-[#FFFBF5] pb-[calc(env(safe-area-inset-bottom)+4rem)]" aria-label="账本栏目">
             {TABS.map((item) => (
               <button
                 key={item.id}
